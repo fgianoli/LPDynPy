@@ -67,11 +67,5 @@ NDVI_SUM_<YEAR>.tif
 ```
 Containing the annual NDVI sum with interpolation applied where appropriate.
 
-## Performance
-Thanks to `uniform_filter` interpolation, the script is:
-- Much faster than with `generic_filter`
-- Memory-efficient by writing temporary files to `/dev/shm`
-- Fully parallelized using `joblib`
-
 ## Dependencies
 - `numpy`, `pandas`, `rasterio`, `scipy`, `netCDF4`, `joblib`, `osgeo.gdal`
