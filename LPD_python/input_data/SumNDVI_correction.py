@@ -1,5 +1,3 @@
-### This code applies the value correction based on https://land.copernicus.eu/en/technical-library/quality-assessment-report-normalised-difference-vegetation-index-333-m-version-2/@@download/file page 86
-
 import os
 import numpy as np
 import rasterio
@@ -7,99 +5,120 @@ from rasterio.transform import from_origin
 from netCDF4 import Dataset
 import pandas as pd
 from osgeo import gdal
-from scipy.ndimage import generic_filter
+from scipy.ndimage import uniform_filter
 from joblib import Parallel, delayed
 import time
 
-# Percorsi e parametri
+# Parameters
 csv_path = '/home/gianofe/Documents/ndvi1km_wgt_avg_total.csv'
 output_dir = '/scratch/gianofe/SumNDVI_rev2/'
 VALID_THRESHOLD = 0.40
-NUM_CORES = 30
+NUM_CORES = 5
+START_YEAR = 1999
 
-# Carica i dati
-print("📌 Caricamento del dataset...")
+# Load data
+print("📌 Loading dataset...")
 data = pd.read_csv(csv_path)
-years = data['year'].unique()
+years = sorted([y for y in data['year'].unique() if y >= START_YEAR])
 os.makedirs(output_dir, exist_ok=True)
 
+def fast_interpolation(data):
+    mask = np.isnan(data)
+    filled = data.copy()
+    data_zeroed = np.nan_to_num(data)
+    local_sum = uniform_filter(data_zeroed, size=3)
+    count = uniform_filter((~np.isnan(data)).astype(float), size=3)
+    with np.errstate(invalid='ignore'):
+        local_mean = np.where(count > 0, local_sum / count, np.nan)
+    filled[mask] = local_mean[mask]
+    return filled
 
-# Funzione per elaborare un singolo file
 def process_file(row):
     file_path = row['path']
     satellite = row['satellite']
 
     if not os.path.exists(file_path):
-        print(f"❌ File non trovato: {file_path}")
+        print(f"❌ File not found: {file_path}")
         return None, None, None
 
     try:
         if satellite in ['VGT', 'PROBAV']:
             with Dataset(file_path, 'r') as nc_file:
                 if 'NDVI' not in nc_file.variables:
-                    print(f"❌ Layer NDVI non trovato nel file NetCDF: {file_path}")
+                    print(f"❌ NDVI missing in NetCDF: {file_path}")
                     return None, None, None
-                ndvi_data = (nc_file.variables['NDVI'][:].astype(np.float32) - 0.013) / 0.958
+                ndvi_data = nc_file.variables['NDVI'][:].astype(np.float32)
                 ndvi_data = np.squeeze(ndvi_data)
                 lat = nc_file.variables['lat'][:]
                 lon = nc_file.variables['lon'][:]
-                resolution_x, resolution_y = lon[1] - lon[0], lat[0] - lat[1]
-                transform = from_origin(lon[0], lat[0], resolution_x, resolution_y)
+                res_x = lon[1] - lon[0]
+                res_y = lat[0] - lat[1]
+                transform = from_origin(lon[0], lat[0], res_x, res_y)
+                ndvi_data[(ndvi_data == 250) | (ndvi_data == 255)] = np.nan
+                ndvi_data = (ndvi_data - 0.013) / 0.958
+
         elif satellite == 'OLCI':
             with rasterio.open(file_path) as src:
                 ndvi_data = src.read(1).astype(np.float32)
-                ndvi_data[ndvi_data == src.nodata] = np.nan
+                print(f"👉 {file_path} | nodata: {src.nodata}")
+                print(f"👉 Min/Max values: {np.nanmin(ndvi_data)} / {np.nanmax(ndvi_data)}")
+
+                if src.nodata is not None:
+                    ndvi_data[ndvi_data == src.nodata] = np.nan
+                ndvi_data[(ndvi_data > 1.0) | (ndvi_data < -1.0)] = np.nan
+                ndvi_data[ndvi_data == 2] = np.nan
                 transform = src.transform
 
-        ndvi_data[(ndvi_data == 250) | (ndvi_data == 255)] = np.nan
         valid_mask = ~np.isnan(ndvi_data)
         valid_count = np.zeros_like(ndvi_data, dtype=np.int32)
         valid_count[valid_mask] += 1
 
-        print(f"✅ File processato correttamente: {file_path}")
+        print(f"✅ Processed: {file_path}")
         return ndvi_data, valid_count, transform
+
     except Exception as e:
-        print(f"❌ Errore nella lettura del file: {file_path}, {e}")
+        print(f"❌ Error in file {file_path}: {e}")
         return None, None, None
 
-
-# Funzione per elaborare un intero anno
 def process_year(selected_year):
     year_data = data[data['year'] == selected_year]
-    print(f"📌 Inizio elaborazione per l'anno {selected_year} con {len(year_data)} file...")
-    start_time = time.time()
+    print(f"\n📆 Processing {selected_year} ({len(year_data)} files)...")
+    start = time.time()
 
-    results = Parallel(n_jobs=NUM_CORES)(delayed(process_file)(row) for _, row in year_data.iterrows())
+    results = Parallel(n_jobs=NUM_CORES)(
+        delayed(process_file)(row) for _, row in year_data.iterrows()
+    )
 
-    annual_sum, valid_count, transform = None, None, None
-    for ndvi_data, v_count, file_transform in results:
-        if ndvi_data is None or v_count is None:
-            continue
-        if annual_sum is None:
-            annual_sum = np.zeros_like(ndvi_data, dtype=np.float32)
-            valid_count = np.zeros_like(ndvi_data, dtype=np.int32)
-            transform = file_transform
-        annual_sum += ndvi_data
-        valid_count += v_count
+    ndvi_stack = [res[0] for res in results if res[0] is not None]
+    vcount_stack = [res[1] for res in results if res[1] is not None]
+    transform = next((res[2] for res in results if res[2] is not None), None)
 
-    if annual_sum is not None:
-        min_valid_count = max(1, len(year_data) * VALID_THRESHOLD)
-        valid_pixels = valid_count >= min_valid_count
+    if ndvi_stack:
+        print(f"📈 Annual stack: {len(ndvi_stack)} rasters")
+        annual_sum = np.nansum(np.stack(ndvi_stack), axis=0)
+        valid_count = np.sum(np.stack(vcount_stack), axis=0)
 
-        def interpolate_nn(data):
-            mask = np.isnan(data)
-            return np.nan if np.all(mask) else np.nanmean(data)
+        min_valid = max(1, len(year_data) * VALID_THRESHOLD)
+        valid_pixels = valid_count >= min_valid
 
-        print(f"🔄 Interpolazione per i pixel mancanti per l'anno {selected_year}...")
-        interpolated_image = generic_filter(annual_sum, interpolate_nn, size=3, mode='nearest')
-        annual_sum[valid_pixels & np.isnan(annual_sum)] = interpolated_image[valid_pixels & np.isnan(annual_sum)]
+        print(f"📊 Valid pixels >= {int(VALID_THRESHOLD * 100)}%: {(valid_pixels.sum() / valid_pixels.size) * 100:.2f}%")
+
+        print("⚡ Fast interpolation...")
+        interpolated = fast_interpolation(annual_sum)
+        mask_to_interpolate = valid_pixels & np.isnan(annual_sum)
+        annual_sum[mask_to_interpolate] = interpolated[mask_to_interpolate]
         annual_sum[~valid_pixels] = np.nan
 
-        nan_percentage = np.isnan(annual_sum).sum() / annual_sum.size * 100
-        print(f"📊 Percentuale di NoData per {selected_year}: {nan_percentage:.2f}%")
+        nan_perc = np.isnan(annual_sum).sum() / annual_sum.size * 100
+        print(f"📊 NoData {selected_year}: {nan_perc:.2f}%")
 
-        temp_path = os.path.join(output_dir, f'NDVI_SUM_{selected_year}_temp.tif')
-        output_path = os.path.join(output_dir, f'NDVI_SUM_{selected_year}.tif')
+        temp_path = f"/dev/shm/NDVI_SUM_{selected_year}_temp.tif"
+        final_path = os.path.join(output_dir, f'NDVI_SUM_{selected_year}.tif')
+
+        for path in [temp_path, final_path]:
+            if os.path.exists(path):
+                print(f"🗑️ Removed existing: {path}")
+                os.remove(path)
 
         profile = {
             'driver': 'GTiff',
@@ -112,14 +131,18 @@ def process_year(selected_year):
             'nodata': -9999,
         }
 
-        print(f"💾 Salvando file raster per {selected_year}...")
+        print(f"💾 Writing raster {selected_year}...")
         with rasterio.open(temp_path, 'w', **profile) as dst:
             dst.write(annual_sum, 1)
 
-        gdal.Translate(output_path, temp_path, creationOptions=["COMPRESS=ZSTD", "PREDICTOR=2"])
+        gdal.Translate(final_path, temp_path, creationOptions=["COMPRESS=ZSTD", "PREDICTOR=2"])
         os.remove(temp_path)
-        print(f"✅ Elaborazione per {selected_year} completata in {time.time() - start_time:.2f} secondi.")
 
+        print(f"✅ Done {selected_year} in {time.time() - start:.2f} sec.")
 
-# Processa tutti gli anni in parallelo
-Parallel(n_jobs=NUM_CORES)(delayed(process_year)(year) for year in years)
+for i in range(0, len(years), 8):
+    batch = years[i:i + 8]
+    print(f"\n🔹 Processing batch: {batch}")
+    Parallel(n_jobs=NUM_CORES)(delayed(process_year)(y) for y in batch)
+
+print("\n🏁 All years processed.")
