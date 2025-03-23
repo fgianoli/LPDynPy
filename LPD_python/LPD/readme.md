@@ -1,84 +1,68 @@
-# LPD Computation
+# 🌍 Land Productivity Dynamics (LPD) Toolkit
 
-# 🌿 Steadiness Index: Concept and Calculation
+This repository provides a comprehensive set of Python scripts to assess **Land Productivity Dynamics (LPD)** using remote sensing time series (e.g., NDVI). The methodology is aligned with the standards of the **UNCCD** and supports reporting on **Land Degradation Neutrality (LDN)** under **SDG Indicator 15.3.1**.
 
-The **Steadiness Index** is a synthetic indicator that summarizes the **temporal behavior** of a pixel over a given time period (e.g., annual NDVI between 2000 and 2023). It is commonly used in **land degradation** and **vegetation dynamics** analysis to classify each pixel according to its **trend and stability**.
+Each script in the toolkit represents a key step in the analytical workflow, enabling users to:
 
----
-
-## 📊 1. What calculations are involved?
-
-For each pixel, the time series is analyzed using **two main metrics**:
-
----
-
-### 🔸 A. Slope (Linear Trend)
-
-This measures the **overall trend** of the time series:
-
-- Computed as the **slope of the least-squares linear regression** between `year` and `value`.
-- Interpretation:
-  - 📈 **Positive slope** → Increasing trend (e.g., vegetation improvement)
-  - 📉 **Negative slope** → Decreasing trend (e.g., land degradation)
-  - ➖ **Zero slope** → No clear trend
+- Analyze vegetation trends and variability
+- Identify areas of degradation or improvement
+- Derive ecosystem functional classifications
+- Assess land productivity status and changes
+- Integrate indicators into combined assessments for reporting
 
 ---
 
-### 🔸 B. MTID (Mean Temporal Indicator of Deviation)
+## 📘 Background
 
-This measures the **temporal deviation** relative to the most recent valid value in the series. It estimates **how much the current value differs from the historical behavior**.
+The LPD framework is a core component of the **land degradation indicator system** developed under the **United Nations Convention to Combat Desertification (UNCCD)**. It includes the following key indicators:
 
-- Computed as:
+- **Long-Term Change** (trend, baseline, deviation)
+- **Current Status** (relative to local potential)
+- **Combined Assessment** (integration of above for classification)
 
-MTID = sum of (last_valid_value - each_valid_value)
-
-  - Interpretation:
-- ➕ **Positive MTID** → Current value is **higher** than past values
-- ➖ **Negative MTID** → Current value is **lower** than past values
-- 0 → No significant deviation
+This toolkit facilitates reproducible, transparent, and customizable LPD analyses using raster-based time series such as **NDVI**, phenological metrics, or other proxies of land productivity.
 
 ---
 
-## 🧠 2. How are they combined?
+## 🔁 Workflow Overview
 
-The **Steadiness Index** raster assigns each pixel a **discrete class value** (0 to 4), based on the combination of `slope` and `mtid`:
+Below is the recommended sequence of scripts to perform a full LPD analysis:
 
-| Slope       | MTID       | Steadiness Index | Meaning                                        |
-|-------------|------------|------------------|------------------------------------------------|
-| < 0         | > 0        | 1                | Degrading, but still above past average        |
-| < 0         | < 0        | 2                | Degrading and below past average               |
-| > 0         | < 0        | 3                | Improving, but currently below average         |
-| > 0         | > 0        | 4                | Improving and above average                    |
-| 0 or MTID=0 | any        | 0                | No clear trend / stable                        |
-
----
-
-## 📌 3. What is it used for?
-
-The Steadiness Index is helpful for:
-
-- Assessing **land degradation** or **restoration**
-- Monitoring **land productivity dynamics**
-- **Zoning** landscapes based on temporal patterns
-- Supporting **environmental or agricultural decisions**
+1. [`01_steadiness.md`](docs/01_steadiness.md) – Calculate **Steadiness Index**: trend & deviation from time series.
+2. [`02_baseline.md`](docs/02_baseline.md) – Classify **Baseline Productivity Level** from early years.
+3. [`03_state_change.md`](docs/03_state_change.md) – Identify **State Change** between early and recent periods.
+4. [`04_long_term_change.md`](docs/04_long_term_change.md) – Combine indicators to derive **22-class Long-Term Change**.
+5. [`05_remove_multicollinearity.md`](docs/05_remove_multicollinearity.md) – Remove **multicollinearity** in input layers.
+6. [`06_07_clusteringEFT.md`](docs/06_07_clusteringEFT.md) – Perform **clustering** of Ecosystem Functional Types (EFTs).
+7. [`08_lnscaling.md`](docs/08_lnscaling.md) – Compute **Local Net Scaling (LNS)**: current productivity vs. potential.
+8. [`09_lpd_combassess.md`](docs/09_lpd_combassess.md) – Generate the **Combined LPD Assessment** map (5 classes).
 
 ---
 
-## 💬 Real-world example
+## 🛠️ Requirements
 
-In an agricultural region:
-
-- A pixel with **negative slope** and **positive MTID** → degradation just started, but still above long-term average.
-- A pixel with **negative slope** and **negative MTID** → in advanced degradation, performing worse than historical values.
+- Python 3.8+
+- Libraries:
+  - `rasterio`, `numpy`, `pandas`, `scikit-learn`
+  - `dask`, `joblib`, `numba`, `matplotlib`
+- Input data:
+  - Multi-band NDVI or productivity rasters (e.g., 1999–2023)
+  - Land cover map (optional, for clustering)
+  - Preprocessed raster stacks for clustering/LNS
 
 ---
 
-## 🗺️ Steadiness Index Legend (Classes)
+## 🧭 References
 
-```text
-0 - Stable or No trend
-1 - Degrading but still above average
-2 - Degrading and below average
-3 - Improving but still below average
-4 - Improving and above average
+- UNCCD (2016). *Good Practice Guidance for SDG Indicator 15.3.1*
+- Bai et al. (2008). *Global Assessment of Land Degradation and Improvement.*
+- Ivits & Cherlet (2016). *Land Productivity Dynamics: Towards integrated assessment*
+
+---
+
+## 🤝 Contributing
+
+If you would like to contribute new modules, improve existing logic, or suggest enhancements, feel free to open a pull request or start a discussion in the Issues section.
+
+---
 
