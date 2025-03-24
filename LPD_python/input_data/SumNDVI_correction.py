@@ -5,8 +5,9 @@ from rasterio.transform import from_origin
 from netCDF4 import Dataset
 import pandas as pd
 from osgeo import gdal
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import generic_filter
 from joblib import Parallel, delayed
+from numba import jit
 import time
 
 # Parameters
@@ -22,16 +23,26 @@ data = pd.read_csv(csv_path)
 years = sorted([y for y in data['year'].unique() if y >= START_YEAR])
 os.makedirs(output_dir, exist_ok=True)
 
-def fast_interpolation(data):
-    mask = np.isnan(data)
-    filled = data.copy()
-    data_zeroed = np.nan_to_num(data)
-    local_sum = uniform_filter(data_zeroed, size=3)
-    count = uniform_filter((~np.isnan(data)).astype(float), size=3)
-    with np.errstate(invalid='ignore'):
-        local_mean = np.where(count > 0, local_sum / count, np.nan)
-    filled[mask] = local_mean[mask]
-    return filled
+# Interpolation using numba-accelerated function
+@jit(nopython=True)
+def mean_filter_3x3(array):
+    rows, cols = array.shape
+    result = np.empty_like(array, dtype=np.float32)
+    for i in range(rows):
+        for j in range(cols):
+            count = 0
+            total = 0.0
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    ni = i + dx
+                    nj = j + dy
+                    if 0 <= ni < rows and 0 <= nj < cols:
+                        val = array[ni, nj]
+                        if not np.isnan(val):
+                            total += val
+                            count += 1
+            result[i, j] = total / count if count > 0 else np.nan
+    return result
 
 def process_file(row):
     file_path = row['path']
@@ -101,16 +112,18 @@ def process_year(selected_year):
         min_valid = max(1, len(year_data) * VALID_THRESHOLD)
         valid_pixels = valid_count >= min_valid
 
-        print(f"📊 Valid pixels >= {int(VALID_THRESHOLD * 100)}%: {(valid_pixels.sum() / valid_pixels.size) * 100:.2f}%")
+        print(f" Valid pixels >= {int(VALID_THRESHOLD * 100)}%: {(valid_pixels.sum() / valid_pixels.size) * 100:.2f}%")
 
-        print("⚡ Fast interpolation...")
-        interpolated = fast_interpolation(annual_sum)
+        print("⚡ Interpolating missing pixels with Numba...")
+        masked_input = annual_sum.data if isinstance(annual_sum, np.ma.MaskedArray) else annual_sum
+        masked_input = np.where(np.isnan(masked_input), np.nan, masked_input)
+        interpolated = mean_filter_3x3(masked_input)
         mask_to_interpolate = valid_pixels & np.isnan(annual_sum)
         annual_sum[mask_to_interpolate] = interpolated[mask_to_interpolate]
         annual_sum[~valid_pixels] = np.nan
 
         nan_perc = np.isnan(annual_sum).sum() / annual_sum.size * 100
-        print(f"📊 NoData {selected_year}: {nan_perc:.2f}%")
+        print(f"NoData {selected_year}: {nan_perc:.2f}%")
 
         temp_path = f"/dev/shm/NDVI_SUM_{selected_year}_temp.tif"
         final_path = os.path.join(output_dir, f'NDVI_SUM_{selected_year}.tif')
@@ -140,8 +153,8 @@ def process_year(selected_year):
 
         print(f"✅ Done {selected_year} in {time.time() - start:.2f} sec.")
 
-for i in range(0, len(years), 8):
-    batch = years[i:i + 8]
+for i in range(0, len(years), 5):
+    batch = years[i:i + 5]
     print(f"\n🔹 Processing batch: {batch}")
     Parallel(n_jobs=NUM_CORES)(delayed(process_year)(y) for y in batch)
 
