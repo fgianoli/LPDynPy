@@ -1,148 +1,186 @@
 import os
 import numpy as np
 import rasterio
+import rioxarray
+import xarray as xr
+import dask.array as da
 from rasterio.transform import from_origin
-from netCDF4 import Dataset
+from datetime import datetime
 import pandas as pd
-from osgeo import gdal
-from scipy.ndimage import generic_filter
 from joblib import Parallel, delayed
 import time
+import multiprocessing
+from osgeo import gdal
+from scipy.interpolate import griddata
+import numba
 
-selected_year = 2023  # Anno da elaborare
-csv_path = '/home/gianofe/Documents/ndvi1km_wgt_avg_total.csv'
-output_dir = '/scratch/gianofe/SumNDVI/'
-
-VGT_ADDITION = 0.020153429891809294
-PROBAV_ADDITION = 0.007090153358568274
+# 📌 Parametri configurabili
+csv_path = "/home/gianofe/Documents/ndvi1km_wgt_avg_total.csv"
+output_dir = "/scratch/gianofe/season_variables_rev2"
+start_year = 1999       # 🔁 Anno di partenza
+n_years = 3            # 🔁 Numero di anni consecutivi da elaborare
 VALID_THRESHOLD = 0.40
-NUM_CORES = 8
+NUM_CORES = multiprocessing.cpu_count()
 
-data = pd.read_csv(csv_path)
+# 📁 Crea cartella di output
 os.makedirs(output_dir, exist_ok=True)
 
-years = data['year'].unique()
-if selected_year not in years:
-    print(f"⚠️ Errore: l'anno {selected_year} non è presente nel dataset.")
-    exit(1)
+# 📄 Leggi il CSV
+data_df = pd.read_csv(csv_path)
+data_df['date'] = pd.to_datetime(data_df['path'].str.extract(r'(\d{8})')[0], format='%Y%m%d', errors='coerce')
 
-year_data = data[data['year'] == selected_year]
+# ⚙️ Correzione NDVI con Numba
+@numba.njit(parallel=True)
+def correct_ndvi(ndvi_data):
+    for i in numba.prange(ndvi_data.shape[0]):
+        for j in range(ndvi_data.shape[1]):
+            val = ndvi_data[i, j]
+            if not np.isnan(val):
+                ndvi_data[i, j] = (val - 0.013) / 0.958
+    return ndvi_data
 
-print(f"📌 Inizio elaborazione per l'anno {selected_year} con {len(year_data)} file...")
-start_time = time.time()
-
-
-def process_file(row):
+# 📥 Caricamento singolo file NDVI
+def load_ndvi(row):
     file_path = row['path']
-    satellite = row['satellite']
-
     if not os.path.exists(file_path):
         print(f"❌ File non trovato: {file_path}")
-        return None, None, None
-
-    if satellite == 'VGT':
-        addition_value = VGT_ADDITION
-    elif satellite == 'PROBAV':
-        addition_value = PROBAV_ADDITION
-    else:
-        addition_value = 0
+        return None, None
 
     try:
-        if satellite in ['VGT', 'PROBAV']:
-            with Dataset(file_path, 'r') as nc_file:
-                if 'NDVI' not in nc_file.variables:
-                    print(f"❌ Layer NDVI non trovato nel file NetCDF: {file_path}")
-                    return None, None, None
-
-                ndvi_data = nc_file.variables['NDVI'][:].astype(np.float32) + addition_value
-                ndvi_data = np.squeeze(ndvi_data)
-
-                lat = nc_file.variables['lat'][:]
-                lon = nc_file.variables['lon'][:]
-                resolution_x = lon[1] - lon[0]
-                resolution_y = lat[0] - lat[1]
-                origin_x = lon[0]
-                origin_y = lat[0]
-                nc_transform = from_origin(origin_x, origin_y, resolution_x, resolution_y)
-
-        elif satellite == 'OLCI':
-            with rasterio.open(file_path) as src:
-                ndvi_data = src.read(1).astype(np.float32)
-                ndvi_data[ndvi_data == src.nodata] = np.nan
-                nc_transform = src.transform
+        if file_path.endswith('.tif'):
+            with rioxarray.open_rasterio(file_path) as ds:
+                ndvi_data = ds[0].values.astype(np.float32)
+                nc_transform = ds.rio.transform()
+        else:
+            with xr.open_dataset(file_path) as ds:
+                if "NDVI" not in ds.variables:
+                    print(f"⚠️ NDVI non trovato nel file: {file_path}")
+                    return None, None
+                ndvi_data = ds["NDVI"].values.astype(np.float32)
+                if ndvi_data.ndim == 3:
+                    ndvi_data = ndvi_data[0, :, :]
+                lat = ds["lat"].values
+                lon = ds["lon"].values
+                res_x = lon[1] - lon[0]
+                res_y = lat[0] - lat[1]
+                nc_transform = from_origin(lon[0], lat[0], res_x, res_y)
 
         ndvi_data[(ndvi_data == 250) | (ndvi_data == 255)] = np.nan
-        ndvi_data = np.ma.masked_invalid(ndvi_data)
-
-        valid_mask = ~ndvi_data.mask
-        valid_count = np.zeros_like(ndvi_data, dtype=np.int32)
-        valid_count[valid_mask] += 1
-
-        print(f"✅ File processato correttamente: {file_path}")
-        return ndvi_data.filled(0), valid_count, nc_transform
+        ndvi_data = correct_ndvi(ndvi_data)
+        return ndvi_data, nc_transform
 
     except Exception as e:
-        print(f"❌ Errore nella lettura del file: {file_path}, {e}")
+        print(f"❌ Errore nel caricamento {file_path}: {e}")
+        return None, None
+
+# 🧩 Interpolazione dei valori NaN
+def fast_interpolate(ndvi_stack):
+    print("🔄 Interpolazione dei NaN...")
+    x, y = np.meshgrid(np.arange(ndvi_stack.shape[2]), np.arange(ndvi_stack.shape[1]))
+    for i in range(ndvi_stack.shape[0]):
+        nan_mask = np.isnan(ndvi_stack[i])
+        if np.any(nan_mask):
+            valid_points = ~nan_mask
+            ndvi_stack[i][nan_mask] = griddata(
+                (x[valid_points], y[valid_points]),
+                ndvi_stack[i][valid_points],
+                (x[nan_mask], y[nan_mask]), method='nearest')
+    return ndvi_stack
+
+# 📊 Calcolo metriche stagionali
+def calculate_season_metrics_optimized(ndvi_stack, valid_count, dates):
+    print(f"🔢 Calcolo metriche stagionali per {len(dates)} date...")
+
+    min_valid_count = max(1, len(dates) * VALID_THRESHOLD)
+    valid_pixels = valid_count >= min_valid_count
+    ndvi_stack[:, ~valid_pixels] = np.nan
+
+    nan_percentage = np.isnan(ndvi_stack).mean() * 100
+    print(f"📉 Percentuale di NaN dopo il filtraggio: {nan_percentage:.2f}%")
+
+    if nan_percentage > 95:
+        print("⚠️ Troppi NaN. Anno ignorato.")
         return None, None, None
 
+    ndvi_stack = fast_interpolate(ndvi_stack)
 
-results = Parallel(n_jobs=NUM_CORES)(delayed(process_file)(row) for _, row in year_data.iterrows())
+    min_ndvi = np.nanmin(ndvi_stack, axis=0)
+    max_ndvi = np.nanmax(ndvi_stack, axis=0)
+    bg2 = min_ndvi + (max_ndvi - min_ndvi) * 0.1
 
-annual_sum = None
-valid_count = None
-transform = None
+    ndvi_above_bg2 = ndvi_stack >= bg2
+    changes = np.diff(ndvi_above_bg2.astype(int), axis=0)
 
-for ndvi_data, v_count, file_transform in results:
-    if ndvi_data is None or v_count is None:
+    sos_idx = np.argmax(changes == 1, axis=0)
+    eos_idx = np.argmax(changes == -1, axis=0)
+
+    valid_sos = (sos_idx > 0) & (sos_idx < len(dates))
+    valid_eos = (eos_idx > 0) & (eos_idx < len(dates))
+
+    sos = np.full(ndvi_stack.shape[1:], np.nan, dtype=np.float32)
+    eos = np.full(ndvi_stack.shape[1:], np.nan, dtype=np.float32)
+
+    sos[valid_sos] = np.array([dates[idx].toordinal() for idx in sos_idx[valid_sos]])
+    eos[valid_eos] = np.array([dates[idx].toordinal() for idx in eos_idx[valid_eos]])
+
+    gsl = eos - sos
+    return sos, eos, gsl
+
+# 🔁 Loop su N anni a partire da start_year
+for year in range(start_year, start_year + n_years):
+    print(f"\n📌 Elaborazione per l'anno {year}")
+    year_data = data_df[data_df['date'].dt.year == year]
+    dates = year_data['date'].tolist()
+
+    if year_data.empty:
+        print("⚠️ Nessun dato disponibile.")
         continue
 
-    if annual_sum is None:
-        annual_sum = np.zeros_like(ndvi_data, dtype=np.float32)
-        valid_count = np.zeros_like(ndvi_data, dtype=np.int32)
-        transform = file_transform
+    start_time = time.time()
+    results = Parallel(n_jobs=NUM_CORES)(delayed(load_ndvi)(row) for _, row in year_data.iterrows())
+    print(f"⏳ Tempo di caricamento: {time.time() - start_time:.2f} sec")
 
-    annual_sum += ndvi_data
-    valid_count += v_count
+    ndvi_stack = []
+    valid_count = None
+    nc_transform = None
 
-if annual_sum is not None:
-    min_valid_count = max(1, len(year_data) * VALID_THRESHOLD)
-    valid_pixels = valid_count >= min_valid_count
+    for ndvi_data, transform in results:
+        if ndvi_data is None or transform is None:
+            continue
+        ndvi_stack.append(ndvi_data)
+        if valid_count is None:
+            valid_count = np.zeros_like(ndvi_data, dtype=np.int32)
+        valid_count += ~np.isnan(ndvi_data)
+        nc_transform = transform
 
+    if not ndvi_stack:
+        print("⚠️ Nessun dato NDVI valido.")
+        continue
 
-    def interpolate_nn(data):
-        mask = np.isnan(data)
-        if np.all(mask):
-            return np.nan
-        return np.nanmean(data)
+    ndvi_stack = da.stack(ndvi_stack, axis=0).compute()
+    print(f"📏 Stack NDVI: {ndvi_stack.shape}")
 
+    sos_map, eos_map, gsl_map = calculate_season_metrics_optimized(ndvi_stack, valid_count, dates)
+    if sos_map is None:
+        continue
 
-    print("🔄 Eseguendo interpolazione per i pixel mancanti...")
-    interpolated_image = generic_filter(annual_sum, interpolate_nn, size=3, mode='nearest')
+    output_path = os.path.join(output_dir, f"seasonal_variables_{year}.tif")
 
-    annual_sum[valid_pixels & np.isnan(annual_sum)] = interpolated_image[valid_pixels & np.isnan(annual_sum)]
-    annual_sum[~valid_pixels] = np.nan
-
-    nan_percentage = np.isnan(annual_sum).sum() / annual_sum.size * 100
-    print(f"📊 Percentuale di NoData finale: {nan_percentage:.2f}%")
-
-    temp_path = os.path.join(output_dir, f'NDVI_SUM_{selected_year}_temp.tif')
-    output_path = os.path.join(output_dir, f'NDVI_SUM_{selected_year}.tif')
-
-    profile = {
+    with rasterio.open(output_path, 'w', **{
         'driver': 'GTiff',
-        'height': annual_sum.shape[0],
-        'width': annual_sum.shape[1],
-        'count': 1,
+        'height': sos_map.shape[0],
+        'width': sos_map.shape[1],
+        'count': 3,
         'dtype': 'float32',
         'crs': 'EPSG:4326',
-        'transform': transform,
+        'transform': nc_transform,
         'nodata': -9999,
-    }
+        'compress': 'LZW'  # ✅ Compressione attiva
+    }) as dst:
+        dst.write(sos_map, 1)
+        dst.write(eos_map, 2)
+        dst.write(gsl_map, 3)
 
-    print("💾 Salvando file raster...")
-    with rasterio.open(temp_path, 'w', **profile) as dst:
-        dst.write(annual_sum, 1)
+    print(f"✅ Output salvato in: {output_path}")
 
-    gdal.Translate(output_path, temp_path, creationOptions=["COMPRESS=ZSTD", "PREDICTOR=2"])
-    os.remove(temp_path)
-    print(f"✅ Elaborazione completata in {time.time() - start_time:.2f} secondi.")
+print("\n🎯 Tutti gli anni elaborati con successo.")
