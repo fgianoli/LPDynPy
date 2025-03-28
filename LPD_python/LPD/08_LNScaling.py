@@ -95,8 +95,9 @@ def LNScaling(EFTs_path, ProdVar_path, years, filename="", cores=1):
 
 
 # Esempio di utilizzo
-EFTs_path = "/home/gianofe/Desktop/Documents/corrected/output/EFTs_clusters2.tif"
-ProdVar_path = "/home/gianofe/Desktop/Documents/corrected/cf_multiband.tif"
-years = list(range(1999, 2025))  # Definiamo gli anni corrispondenti alle bande
-output_path = "/home/gianofe/Desktop/Documents/corrected/output/lns.tif"
-LSP_result = LNScaling(EFTs_path, ProdVar_path, years, filename=output_path, cores=40)
+if __name__ == "__main__":
+    EFTs_path = "/home/gianofe/Desktop/Documents/corrected/output/EFTs_clusters2.tif"
+    ProdVar_path = "/home/gianofe/Desktop/Documents/corrected/cf_multiband.tif"
+    years = list(range(1999, 2025))  # Definiamo gli anni corrispondenti alle bande
+    output_path = "/home/gianofe/Desktop/Documents/corrected/output/lns.tif"
+    LSP_result = LNScaling(EFTs_path, ProdVar_path, years, filename=output_path, cores=40)
