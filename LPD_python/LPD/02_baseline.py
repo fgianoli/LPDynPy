@@ -28,7 +28,7 @@ def baseline_lev(obj2process, yearsBaseline=3, drylandProp=0.4, highprodProp=0.1
 
     print(f"Raster shape: {obj2process.shape}")
     start_year = 1999
-    selected_years = np.arange(2008, 2024)  # Anni dal 2008 al 2023
+    selected_years = np.arange(2004, 2019)  # Anni dal 2008 al 2023
     band_indices = selected_years - start_year  # Converti anni in indici (base 0)
 
     print(f"Selected band indices: {band_indices[:yearsBaseline]}")
@@ -83,8 +83,8 @@ def baseline_lev(obj2process, yearsBaseline=3, drylandProp=0.4, highprodProp=0.1
 
 
 if __name__ == "__main__":
-    input_raster = "/home/gianofe/Documents/corrected/sumndvi_multiband_xxl.tif"
-    output_raster = "/home/gianofe/Documents/corrected/baselinexxl.tif"
+    input_raster = "/scratch/gianofe/SumNDVI_correction_rev4/NDVI_SUM_multiband_rev4.tif"
+    output_raster = "/scratch/gianofe/SumNDVI_correction_rev4/outputs/baseline_2008_2023.tif"
 
     print(f"Opening input raster: {input_raster}")
     with rasterio.open(input_raster) as src:
