@@ -70,10 +70,10 @@ def long_term_change(steadiness_index, baseline_levels, state_change, filename="
 
 
 if __name__ == "__main__":
-    steadiness_index_raster = "/home/gianofe/Documents/corrected/SteadIndxxl.tif"
-    baseline_levels_raster = "/home/gianofe/Documents/corrected/baselinexxl.tif"
-    state_change_raster = "/home/gianofe/Documents/corrected/state_changexxl.tif"
-    output_raster = "/home/gianofe/Documents/corrected/long_term_change.tif"
+    steadiness_index_raster = "/scratch/gianofe/SumNDVI_correction_rev4/outputs/SteadInd_2008_2023.tif"
+    baseline_levels_raster = "/scratch/gianofe/SumNDVI_correction_rev4/outputs/baseline_2008_2023.tif"
+    state_change_raster = "/scratch/gianofe/SumNDVI_correction_rev4/outputs/state_change_2008_2023.tif"
+    output_raster = "/scratch/gianofe/SumNDVI_correction_rev4/outputs/long_term_change_2008_2023.tif"
 
     print("Running Long Term Change function...")
     Long_Term_Change_Map = long_term_change(
