@@ -17,7 +17,7 @@ def read_raster(filepath):
     return data, meta
 
 
-def compute_mean_last_n_years(data, years, start_year=2008, end_year=2023):
+def compute_mean_last_n_years(data, years, start_year=2004, end_year=2019):
     """Calcola la media degli anni selezionati del raster di produttività."""
     print("Calcolo della media degli anni selezionati...")
     start_time = time.time()
@@ -84,7 +84,7 @@ def LNScaling(EFTs_path, ProdVar_path, years, filename="", cores=1):
     ProdVar, _ = read_raster(ProdVar_path)
     if EFTs.shape[1:] != ProdVar.shape[1:]:
         raise ValueError("EFTs e ProdVar devono avere la stessa estensione e risoluzione")
-    ProdVar_avg = compute_mean_last_n_years(ProdVar, years, start_year=2008, end_year=2023)
+    ProdVar_avg = compute_mean_last_n_years(ProdVar, years, start_year=2004, end_year=2019)
     potential_prod = compute_percentile_by_cluster(ProdVar_avg, EFTs[0])
     ProdVar_avg = np.where(ProdVar_avg > potential_prod, potential_prod, ProdVar_avg)
     LSP = compute_local_scaled_productivity(ProdVar_avg, potential_prod)
@@ -94,10 +94,9 @@ def LNScaling(EFTs_path, ProdVar_path, years, filename="", cores=1):
     return LSP
 
 
-# Esempio di utilizzo
-if __name__ == "__main__":
-    EFTs_path = "/home/gianofe/Desktop/Documents/corrected/output/EFTs_clusters2.tif"
-    ProdVar_path = "/home/gianofe/Desktop/Documents/corrected/cf_multiband.tif"
-    years = list(range(1999, 2025))  # Definiamo gli anni corrispondenti alle bande
-    output_path = "/home/gianofe/Desktop/Documents/corrected/output/lns.tif"
-    LSP_result = LNScaling(EFTs_path, ProdVar_path, years, filename=output_path, cores=40)
+# Esempio di utilizzo  RICORDARSI DI CAMBIARE ANCHE GLI ANNI NEL CODICE A RIGA 20 e a RIGA 87
+EFTs_path = "/scratch/gianofe/SumNDVI_correction_rev3/outputs/EFTs_landcover_2004_2019.tif"
+ProdVar_path = "/scratch/gianofe/cf_rev2/cf/cf_new.tif"
+years = list(range(1999, 2025))  # Definiamo gli anni corrispondenti alle bande
+output_path = "/scratch/gianofe/SumNDVI_correction_rev3/outputs/lns_2004_2019.tif"
+LSP_result = LNScaling(EFTs_path, ProdVar_path, years, filename=output_path, cores=40)
