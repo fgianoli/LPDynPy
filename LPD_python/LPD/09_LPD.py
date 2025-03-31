@@ -92,9 +92,9 @@ def LPD_CombAssess(LandProd_change_path, LandProd_current_path=None, local_prod_
 
 
 # Esempio di utilizzo
-LandProd_change_path = "/home/gianofe/Desktop/Documents/corrected/output/long_term_change.tif"
-LandProd_current_path = "/home/gianofe/Desktop/Documents/corrected/output/lns.tif"
-output_path = "/home/gianofe/Desktop/Documents/corrected/output/bs_LPD_finalMap.tif"
+LandProd_change_path = "/scratch/gianofe/SumNDVI_correction_rev3/outputs/long_term_change_2004_2019.tif"
+LandProd_current_path = "/scratch/gianofe/SumNDVI_correction_rev3/outputs/lns_2004_2019.tif"
+output_path = "/scratch/gianofe/SumNDVI_correction_rev3/outputs/LPD_finalMap_2019.tif"
 
 LPD_finalMap = LPD_CombAssess(LandProd_change_path, LandProd_current_path, filename=output_path)
 
